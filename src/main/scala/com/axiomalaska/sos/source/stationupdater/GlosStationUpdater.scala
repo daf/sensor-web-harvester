@@ -21,9 +21,11 @@ import org.apache.log4j.Logger
 import java.io.ByteArrayOutputStream
 import java.io.File
 import org.apache.commons.net.ftp.FTPClient
+import org.apache.commons.net.ftp.FTPFile
 import scala.collection.mutable
 import com.axiomalaska.sos.source.data.PhenomenaFactory
 
+import scala.util.control.Breaks._
 //case class GlosStation (stationName: String, stationId: String, stationDesc: String, lat: Double, lon: Double)
 
 case class GLOSStation (stationName: String, stationId: String, stationDesc: String, platformType: String, lat: Double, lon: Double)
@@ -104,6 +106,7 @@ class GlosStationUpdater (private val stationQuery: StationQuery,
       return List[(DatabaseStation, List[(DatabaseSensor, List[DatabasePhenomenon])])]()
     }
     LOGGER.info(dir.listFiles.length + " files in directory")
+    var path_list: Array[FTPFile] = glos_ftp.listFiles
     val finallist = for (file <- dir.listFiles; if file.getName.contains(".xml")) yield {
         val readin = scala.io.Source.fromFile(file)
         val xml = scala.xml.XML.loadString(readin.mkString)
@@ -111,6 +114,23 @@ class GlosStationUpdater (private val stationQuery: StationQuery,
         val station = readStationFromXML(xml)
         // get the obs data, need this for the depth values
         var dataXML: scala.xml.Elem = null
+
+        breakable {
+          for (ftpfile <- path_list) yield {
+            if (ftpfile.getName.contains(station.stationName)) {
+              try {
+                val input_stream = glos_ftp.retrieveFileStream(ftpfile.getName)
+                dataXML = scala.xml.XML.load(input_stream)
+                input_stream.close()
+                break
+              } catch {
+                case ex: Exception =>
+                  LOGGER.error("Could not open file: " + ftpfile.getName + "\n" + ex.toString)
+              }
+            }
+          }
+        }
+
         if (dataXML.ne(null)) {
           LOGGER.info("reading xml file for station: " + station.stationName)
           val depths = readInDepths(dataXML)
@@ -128,38 +148,7 @@ class GlosStationUpdater (private val stationQuery: StationQuery,
     }
     finallist.filter(p => p._2.nonEmpty).toList
   }
-  
-  private def readInData(stationid: String) : scala.xml.Elem = {
-    var retval: scala.xml.Elem = null
-    try {
-      for (file <- glos_ftp.listFiles) {
-        if (file.getName.contains(stationid) && file.getName.toLowerCase.endsWith(".xml")) {
-          val byteStream = new ByteArrayOutputStream
-          glos_ftp.retrieveFile(file.getName, byteStream) match {
-            case true => {
-                try {
-                  val xmlStr = byteStream.toString("UTF-8").trim
-                  retval = scala.xml.XML.loadString(xmlStr)
-                  return retval
-                } catch {
-                  case ex: Exception => 
-                    LOGGER.error("Could not open file: " + file.getName + "\n" + ex.toString)
-                }
-                retval = null
-            }
-            case _ => {
-                retval = null
-            }
-          }
-        }
-      }
-    } catch {
-      case ex: Exception => LOGGER.error(ex.toString)
-    }
-    LOGGER.info("could not find a data xml for " + stationid)
-    return retval
-  }
-  
+
   private def readInDepths(data: scala.xml.Elem) : List[Double] = {
     var continue: Boolean = true
     var retval: List[Double] = Nil
